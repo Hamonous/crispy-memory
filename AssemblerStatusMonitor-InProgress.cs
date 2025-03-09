@@ -1,0 +1,639 @@
+/**************************************************************
+ *   HAM ASSEMBLER & REFINERY MONITOR SCRIPT
+ *   Developed by Hamonous | Faction: HAM
+ *
+ *   Description:
+ *     This script displays real-time status for assemblers and
+ *     refineries on LCD panels.
+ *     
+ *     - "assembler-status" LCDs show up to 10 assemblers in a 2×5 grid.
+ *       For example, "assembler-status2" displays assemblers #10–19.
+ *
+ *     - "refinery-status" LCDs show up to 10 refineries in a 2×5 grid.
+ *       For example, "refinery-status2" displays refineries #10–19.
+ *
+ *     Features:
+ *       - Displays production progress with radial gauges and icons.
+ *       - Shows detailed status text for assemblers, including production
+ *         percentages, blueprint names, and queue counts.
+ *       - For refineries, it displays the ingot total corresponding to the
+ *         ore being processed.
+ *       - Includes a minimal mode to help limit script runtime under heavy load.
+ *
+ *   Version: 1.0.2
+ *
+ **************************************************************/
+
+//-------------------------------------
+// USER SETTINGS
+//-------------------------------------
+const string ASSEMBLER_TAG = "assembler-status";  // For LCDs that track assemblers
+const string REFINERY_TAG  = "refinery-status";     // For LCDs that track refineries
+
+const float LCD_SIZE = 512f;   // Each LCD is assumed to be 512×512
+
+// Maximum allowed runtime (in ms) before switching to minimal mode.
+const float MAX_ALLOWED_RUNTIME_MS = 0.8f;
+
+//-------------------------------------
+// DATA STRUCTURES
+//-------------------------------------
+private Dictionary<int, IMyTextPanel> assemblerPanels = new Dictionary<int, IMyTextPanel>();
+private Dictionary<int, IMyTextPanel> refineryPanels  = new Dictionary<int, IMyTextPanel>();
+
+Dictionary<string, string> itemSprites = new Dictionary<string, string>()
+{	
+    // Ores:
+    { "Iron",      "MyObjectBuilder_Ore/Iron" },
+    { "Nickel",    "MyObjectBuilder_Ore/Nickel" },
+    { "Cobalt",    "MyObjectBuilder_Ore/Cobalt" },
+    { "Magnesium", "MyObjectBuilder_Ore/Magnesium" },
+    { "Silicon",   "MyObjectBuilder_Ore/Silicon" },
+    { "Silver",    "MyObjectBuilder_Ore/Silver" },
+    { "Gold",      "MyObjectBuilder_Ore/Gold" },
+    { "Platinum",  "MyObjectBuilder_Ore/Platinum" },
+    { "Uranium",   "MyObjectBuilder_Ore/Uranium" },
+	
+    // Ingots:
+    { "IronIngot",      "MyObjectBuilder_Ingot/Iron" },
+    { "NickelIngot",    "MyObjectBuilder_Ingot/Nickel" },
+    { "CobaltIngot",    "MyObjectBuilder_Ingot/Cobalt" },
+    { "MagnesiumIngot", "MyObjectBuilder_Ingot/Magnesium" },
+    { "SiliconIngot",   "MyObjectBuilder_Ingot/Silicon" },
+    { "SilverIngot",    "MyObjectBuilder_Ingot/Silver" },
+    { "GoldIngot",      "MyObjectBuilder_Ingot/Gold" },
+    { "PlatinumIngot",  "MyObjectBuilder_Ingot/Platinum" },
+    { "UraniumIngot",   "MyObjectBuilder_Ingot/Uranium" }
+};
+
+private Dictionary<string, string> blueprintIcons_ = new Dictionary<string, string>()
+{
+    // Stone Industries Tech:
+    { "Tech2x", "MyObjectBuilder_Component/Tech2x" },
+    { "Tech4x", "MyObjectBuilder_Component/Tech4x" },
+    { "Tech8x", "MyObjectBuilder_Component/Tech8x" },
+    { "Tech16x", "MyObjectBuilder_Component/Tech16x" },
+    { "Tech32x", "MyObjectBuilder_Component/Tech32x" },
+    
+    // AmmoMagazines:
+    { "Bolter8Inch", "MyObjectBuilder_AmmoMagazine/Bolter8Inch" },
+    { "C300AmmoAP", "MyObjectBuilder_AmmoMagazine/C300AmmoAP" },
+    { "C300AmmoG", "MyObjectBuilder_AmmoMagazine/C300AmmoG" },
+    { "C300AmmoHE", "MyObjectBuilder_AmmoMagazine/C300AmmoHE" },
+    { "C30Ammo", "MyObjectBuilder_AmmoMagazine/C30Ammo" },
+    { "C30DUammo", "MyObjectBuilder_AmmoMagazine/C30DUammo" },
+    { "C400AmmoAP", "MyObjectBuilder_AmmoMagazine/C400AmmoAP" },
+    { "C400AmmoCluster", "MyObjectBuilder_AmmoMagazine/C400AmmoCluster" },
+    { "C500AmmoCasaba", "MyObjectBuilder_AmmoMagazine/C500AmmoCasaba" },
+    { "C500AmmoHE", "MyObjectBuilder_AmmoMagazine/C500AmmoHE" },
+    { "CRAM30mmAmmo", "MyObjectBuilder_AmmoMagazine/CRAM30mmAmmo" },
+    { "DestroyerMissileX", "MyObjectBuilder_AmmoMagazine/DestroyerMissileX" },
+    { "H203Ammo", "MyObjectBuilder_AmmoMagazine/H203Ammo" },
+    { "H203AmmoAP", "MyObjectBuilder_AmmoMagazine/H203AmmoAP" },
+    { "MA_150mm", "MyObjectBuilder_AmmoMagazine/MA_150mm" },
+    { "MA_30mm", "MyObjectBuilder_AmmoMagazine/MA_30mm" },
+    { "MA_Missile", "MyObjectBuilder_AmmoMagazine/MA_Missile" },
+    { "Missile200mm", "MyObjectBuilder_AmmoMagazine/Missile200mm" },
+    { "MXA_ArcherPods_Ammo", "MyObjectBuilder_AmmoMagazine/MXA_ArcherPods_Ammo" },
+    { "MXA_BreakWater_APAmmo", "MyObjectBuilder_AmmoMagazine/MXA_BreakWater_APAmmo" },
+    { "MXA_BreakWater_GAmmo", "MyObjectBuilder_AmmoMagazine/MXA_BreakWater_GAmmo" },
+    { "MXA_BreakWater_HEAmmo", "MyObjectBuilder_AmmoMagazine/MXA_BreakWater_HEAmmo" },
+    { "MXA_Coil270Ammo", "MyObjectBuilder_AmmoMagazine/MXA_Coil270Ammo" },
+    { "MXA_Coil270HEAmmo", "MyObjectBuilder_AmmoMagazine/MXA_Coil270HEAmmo" },
+    { "MXA_M58ArcherPods_Ammo", "MyObjectBuilder_AmmoMagazine/MXA_M58ArcherPods_Ammo" },
+    { "MXA_M58ArcherPods_KineticAmmo", "MyObjectBuilder_AmmoMagazine/MXA_M58ArcherPods_KineticAmmo" },
+    { "MXA_MACL_Ammo", "MyObjectBuilder_AmmoMagazine/MXA_MACL_Ammo" },
+    { "MXA_MACL_S_Ammo", "MyObjectBuilder_AmmoMagazine/MXA_MACL_S_Ammo" },
+    { "MXA_Shiva_Ammo", "MyObjectBuilder_AmmoMagazine/MXA_Shiva_Ammo" },
+    { "NATO_25x184mm", "MyObjectBuilder_AmmoMagazine/NATO_25x184mm" },
+    { "NATO_5p56x45mm", "MyObjectBuilder_AmmoMagazine/NATO_5p56x45mm" },
+    { "NovaPlasmaInjectorPack", "MyObjectBuilder_AmmoMagazine/NovaPlasmaInjectorPack" },
+    { "PaladinCompressor", "MyObjectBuilder_AmmoMagazine/PaladinCompressor" },
+    { "R150ammo", "MyObjectBuilder_AmmoMagazine/R150ammo" },
+    { "R250ammo", "MyObjectBuilder_AmmoMagazine/R250ammo" },
+    { "R75ammo", "MyObjectBuilder_AmmoMagazine/R75ammo" },
+    { "RapidFireAutomaticRifleGun_Mag_50rd", "MyObjectBuilder_AmmoMagazine/RapidFireAutomaticRifleGun_Mag_50rd" },
+    { "TorpedoMk1", "MyObjectBuilder_AmmoMagazine/TorpedoMk1" },
+    { "UltimateAutomaticRifleGun_Mag_30rd", "MyObjectBuilder_AmmoMagazine/UltimateAutomaticRifleGun_Mag_30rd" },
+    
+    // Components:
+    { "AryxLynxon_FusionComponent", "MyObjectBuilder_Component/AryxLynxon_FusionComponent" },
+    { "BulletproofGlass", "MyObjectBuilder_Component/BulletproofGlass" },
+    { "Canvas", "MyObjectBuilder_Component/Canvas" },
+    { "Computer", "MyObjectBuilder_Component/Computer" },
+    { "Construction", "MyObjectBuilder_Component/Construction" },
+    { "Detector", "MyObjectBuilder_Component/Detector" },
+    { "Display", "MyObjectBuilder_Component/Display" },
+    { "Explosives", "MyObjectBuilder_Component/Explosives" },
+    { "Field_Modulators", "MyObjectBuilder_Component/Field_Modulators" },
+    { "Girder", "MyObjectBuilder_Component/Girder" },
+    { "GravityGenerator", "MyObjectBuilder_Component/GravityGenerator" },
+    { "InteriorPlate", "MyObjectBuilder_Component/InteriorPlate" },
+    { "LargeTube", "MyObjectBuilder_Component/LargeTube" },
+    { "LeapTube", "MyObjectBuilder_Component/LeapTube" },
+    { "Medical", "MyObjectBuilder_Component/Medical" },
+    { "MetalGrid", "MyObjectBuilder_Component/MetalGrid" },
+    { "Motor", "MyObjectBuilder_Component/Motor" },
+    { "PowerCell", "MyObjectBuilder_Component/PowerCell" },
+    { "RadioCommunication", "MyObjectBuilder_Component/RadioCommunication" },
+    { "Reactor", "MyObjectBuilder_Component/Reactor" },
+    { "ShieldComponent", "MyObjectBuilder_Component/ShieldComponent" },
+    { "SmallTube", "MyObjectBuilder_Component/SmallTube" },
+    { "SolarCell", "MyObjectBuilder_Component/SolarCell" },
+    { "SteelPlate", "MyObjectBuilder_Component/SteelPlate" },
+    { "Superconductor", "MyObjectBuilder_Component/Superconductor" },
+    { "Thrust", "MyObjectBuilder_Component/Thrust" },
+    
+    // Consumable Items:
+    { "Medkit", "MyObjectBuilder_ConsumableItem/Medkit" },
+    { "Powerkit", "MyObjectBuilder_ConsumableItem/Powerkit" },
+    
+    // Datapads:
+    { "Datapad", "MyObjectBuilder_Datapad/Datapad" },
+    
+    // Gas & Oxygen Containers:
+    { "HydrogenBottle", "MyObjectBuilder_GasContainerObject/HydrogenBottle" },
+    { "OxygenBottle", "MyObjectBuilder_OxygenContainerObject/OxygenBottle" },
+    
+    // Physical Gun Objects:
+    { "AngleGrinder2Item", "MyObjectBuilder_PhysicalGunObject/AngleGrinder2Item" },
+    { "AngleGrinder4Item", "MyObjectBuilder_PhysicalGunObject/AngleGrinder4Item" },
+    { "AngleGrinderItem", "MyObjectBuilder_PhysicalGunObject/AngleGrinderItem" },
+    { "FlareGunItem", "MyObjectBuilder_PhysicalGunObject/FlareGunItem" },
+    { "HandDrill4Item", "MyObjectBuilder_PhysicalGunObject/HandDrill4Item" },
+    { "HandDrillItem", "MyObjectBuilder_PhysicalGunObject/HandDrillItem" },
+    { "UltimateAutomaticRifleItem", "MyObjectBuilder_PhysicalGunObject/UltimateAutomaticRifleItem" },
+    { "Welder4Item", "MyObjectBuilder_PhysicalGunObject/Welder4Item" },
+    { "WelderItem", "MyObjectBuilder_PhysicalGunObject/WelderItem" }
+};
+
+//-------------------------------------
+// PROGRAM CONSTRUCTOR
+//-------------------------------------
+public Program()
+{
+    // Gather all text panels that contain either "assembler-status" or "refinery-status".
+    var allLCDs = new List<IMyTextPanel>();
+    GridTerminalSystem.GetBlocksOfType(allLCDs, lcd => lcd.IsSameConstructAs(Me) &&
+        (lcd.CustomName.ToLower().Contains(ASSEMBLER_TAG.ToLower()) ||
+         lcd.CustomName.ToLower().Contains(REFINERY_TAG.ToLower())));
+    if(allLCDs.Count == 0)
+    {
+        Echo("No LCDs found with assembler-status or refinery-status tags.");
+        return;
+    }
+    // For each LCD, determine if it is for assemblers or refineries,
+    // parse the page number, and store it.
+    foreach(var panel in allLCDs)
+    {
+        string lowerName = panel.CustomName.ToLower();
+        if(lowerName.Contains(ASSEMBLER_TAG.ToLower()))
+        {
+            int page = ParsePageNumber(panel.CustomName, ASSEMBLER_TAG);
+            assemblerPanels[page] = panel;
+            ConfigureLCDForSprites(panel);
+        }
+        else if(lowerName.Contains(REFINERY_TAG.ToLower()))
+        {
+            int page = ParsePageNumber(panel.CustomName, REFINERY_TAG);
+            refineryPanels[page] = panel;
+            ConfigureLCDForSprites(panel);
+        }
+    }
+    Runtime.UpdateFrequency = UpdateFrequency.Update100;
+}
+
+//-------------------------------------
+// MAIN
+//-------------------------------------
+public void Main(string arg, UpdateType updateSource)
+{
+    // Gather all assemblers and sort by name.
+    var allAssemblers = new List<IMyAssembler>();
+    GridTerminalSystem.GetBlocksOfType(allAssemblers, a => a.IsSameConstructAs(Me));
+    allAssemblers.Sort((a, b) => a.CustomName.CompareTo(b.CustomName));
+    // Gather all refineries and sort by name.
+    var allRefineries = new List<IMyRefinery>();
+    GridTerminalSystem.GetBlocksOfType(allRefineries, r => r.IsSameConstructAs(Me));
+    allRefineries.Sort((a, b) => a.CustomName.CompareTo(b.CustomName));
+    // Update each assembler-status LCD.
+    foreach(var kvp in assemblerPanels)
+    {
+        int page = kvp.Key;
+        IMyTextPanel lcd = kvp.Value;
+        int startIndex = (page - 1) * 10;
+        var pageAssemblers = new List<IMyAssembler>();
+        for (int i = startIndex; i < startIndex + 10 && i < allAssemblers.Count; i++)
+        {
+            pageAssemblers.Add(allAssemblers[i]);
+        }
+        DrawAssemblerPage(lcd, pageAssemblers);
+    }
+    // Update each refinery-status LCD.
+    foreach(var kvp in refineryPanels)
+    {
+        int page = kvp.Key;
+        IMyTextPanel lcd = kvp.Value;
+        int startIndex = (page - 1) * 10;
+        var pageRefineries = new List<IMyRefinery>();
+        for (int i = startIndex; i < startIndex + 10 && i < allRefineries.Count; i++)
+        {
+            pageRefineries.Add(allRefineries[i]);
+        }
+        DrawRefineryPage(lcd, pageRefineries);
+    }
+}
+
+//-------------------------------------
+// PARSE PAGE # FROM CUSTOMNAME
+//-------------------------------------
+int ParsePageNumber(string lcdName, string baseTag)
+{
+    // Example: lcdName = "assembler-status2", baseTag = "assembler-status"
+    string lower = lcdName.ToLower();
+    int idx = lower.IndexOf(baseTag.ToLower());
+    if (idx < 0) return 1;
+    string remainder = lcdName.Substring(idx + baseTag.Length);
+    string digits = "";
+    foreach (char c in remainder)
+    {
+        if (char.IsDigit(c)) digits += c;
+    }
+    if (string.IsNullOrEmpty(digits)) return 1;
+    int page;
+    if (!int.TryParse(digits, out page)) return 1;
+    return page < 1 ? 1 : page;
+}
+
+//-------------------------------------
+// CONFIGURE LCD FOR SPRITES
+//-------------------------------------
+void ConfigureLCDForSprites(IMyTextPanel lcd)
+{
+    lcd.ContentType = ContentType.SCRIPT;
+    lcd.Script = "";
+    lcd.ScriptBackgroundColor = Color.Black;
+    lcd.WriteText("", false);
+}
+
+//-------------------------------------
+// DRAW ASSEMBLER PAGE
+//-------------------------------------
+void DrawAssemblerPage(IMyTextPanel lcd, List<IMyAssembler> assemblers)
+{
+    lcd.ContentType = ContentType.SCRIPT;
+    lcd.Script = "";
+    lcd.ScriptBackgroundColor = Color.Black;
+    lcd.WriteText("");
+    var frame = lcd.DrawFrame();
+    bool minimalMode = false;
+    float runtimeThreshold = MAX_ALLOWED_RUNTIME_MS;
+    float instructionRatioThreshold = 0.9f;
+    float lastRunTime = (float)Runtime.LastRunTimeMs;
+    float currentInstructionRatio = (float)Runtime.CurrentInstructionCount / (float)Runtime.MaxInstructionCount;
+    if (lastRunTime > runtimeThreshold || currentInstructionRatio > instructionRatioThreshold)
+        minimalMode = true;
+    try
+    {
+        int totalCells = 10;
+        float cellWidth = LCD_SIZE / 2f;
+        float cellHeight = LCD_SIZE / 5f;
+        for (int i = 0; i < totalCells; i++)
+        {
+            int row = i % 5;
+            int col = i / 5;
+            float xStart = col * cellWidth;
+            float yStart = row * cellHeight;
+            var cellCenter = new Vector2(xStart + cellWidth / 2f, yStart + cellHeight / 2f);
+            // Draw cell background.
+            var bg = MySprite.CreateSprite("SquareSimple", cellCenter, new Vector2(cellWidth - 4, cellHeight - 4));
+            bg.Color = new Color(20, 20, 20);
+            frame.Add(bg);
+            if (i < assemblers.Count)
+            {
+                var asm = assemblers[i];
+                bool isProducing = asm.IsProducing;
+                float progress = isProducing ? asm.CurrentProgress : 0f;
+                string blueprint = "";
+                string queueCount = "";
+                if (isProducing)
+                {
+                    var queue = new List<MyProductionItem>();
+                    asm.GetQueue(queue);
+                    if (queue.Count > 0 && queue[0].BlueprintId != null)
+                    {
+                        blueprint = queue[0].BlueprintId.SubtypeName;
+                        queueCount = queue[0].Amount.ToString();
+                    }
+                }
+                if (!minimalMode)
+                {
+                    // Use original gauge offset.
+                    var gaugePos = cellCenter + new Vector2(-85f, -5f);
+                    DrawRadialGaugeGradient(frame, gaugePos, 34f, progress, 16);
+                    // Draw icon if blueprint is known.
+                    if (isProducing && !string.IsNullOrEmpty(blueprint))
+                    {
+                        string icon;
+                        if (blueprintIcons_.TryGetValue(blueprint, out icon))
+                        {
+                            var iconSprite = MySprite.CreateSprite(icon, gaugePos, new Vector2(45f, 45f));
+                            iconSprite.Alignment = TextAlignment.CENTER;
+                            frame.Add(iconSprite);
+                        }
+                    }
+                }
+                // Use original right text offset.
+                float textRight = xStart + cellWidth - 5f;
+                float topY = yStart + 5f;
+                float bottomY = yStart + cellHeight - 20f;
+                var nameText = MySprite.CreateText(
+                    WrapText(asm.CustomName, 20),
+                    "Monospace", Color.White, 0.45f, TextAlignment.RIGHT);
+                nameText.Position = new Vector2(textRight, topY);
+                frame.Add(nameText);
+                string statusText = isProducing
+                    ? ((int)(progress * 100)).ToString() + "% - " + blueprint + " (" + queueCount + ")"
+                    : "Idle";
+                var statusSprite = MySprite.CreateText(statusText, "Monospace", Color.Gold, 0.5f, TextAlignment.RIGHT);
+                statusSprite.Position = new Vector2(textRight, bottomY);
+                frame.Add(statusSprite);
+            }
+            else
+            {
+                var emptySprite = MySprite.CreateText("No Assembler", "Monospace", Color.Gray, 0.5f, TextAlignment.CENTER);
+                emptySprite.Position = cellCenter;
+                frame.Add(emptySprite);
+            }
+        }
+    }
+    finally
+    {
+        frame.Dispose();
+    }
+}
+
+//-------------------------------------
+// DRAW REFINERY PAGE
+//-------------------------------------
+void DrawRefineryPage(IMyTextPanel lcd, List<IMyRefinery> refineries)
+{
+    lcd.ContentType = ContentType.SCRIPT;
+    lcd.Script = "";
+    lcd.ScriptBackgroundColor = Color.Black;
+    lcd.WriteText("");
+    var frame = lcd.DrawFrame();
+    bool minimalMode = false;
+    float runtimeThreshold = MAX_ALLOWED_RUNTIME_MS;
+    float instructionRatioThreshold = 0.9f;
+    float lastRunTime = (float)Runtime.LastRunTimeMs;
+    float currentInstructionRatio = (float)Runtime.CurrentInstructionCount / (float)Runtime.MaxInstructionCount;
+    if (lastRunTime > runtimeThreshold || currentInstructionRatio > instructionRatioThreshold)
+        minimalMode = true;
+    try
+    {
+        int totalCells = 10;
+        float cellWidth = LCD_SIZE / 2f;
+        float cellHeight = LCD_SIZE / 5f;
+        for (int i = 0; i < totalCells; i++)
+        {
+            int row = i % 5;
+            int col = i / 5;
+            float xStart = col * cellWidth;
+            float yStart = row * cellHeight;
+            var cellCenter = new Vector2(xStart + cellWidth / 2f, yStart + cellHeight / 2f);
+            // Draw cell background.
+            var bg = MySprite.CreateSprite("SquareSimple", cellCenter, new Vector2(cellWidth - 4, cellHeight - 4));
+            bg.Color = new Color(20, 20, 20);
+            frame.Add(bg);
+            if (i < refineries.Count)
+            {
+                var refn = refineries[i];
+                if (!minimalMode)
+                {
+                    // Draw refinery name near the top.
+                    float topY = yStart + 5f;
+                    var nameText = MySprite.CreateText(
+                        WrapText(refn.CustomName, 15),
+                        "Monospace", Color.White, 0.45f, TextAlignment.CENTER);
+                    nameText.Position = new Vector2(xStart + cellWidth / 2f, topY);
+                    frame.Add(nameText);
+                    // For input, select the first ore (the one being processed).
+                    var inputItems = new List<MyInventoryItem>();
+                    refn.InputInventory.GetItems(inputItems);
+                    MyInventoryItem? currentOre = null;
+                    foreach (var it in inputItems)
+                    {
+                        if (it.Type.TypeId.EndsWith("_Ore"))
+                        {
+                            currentOre = it;
+                            break;
+                        }
+                    }
+                    // For output, sum only the ingots corresponding to the processed ore.
+                    MyFixedPoint targetIngotTotal = MyFixedPoint.Zero;
+                    string targetIngotKey = "";
+                    if (currentOre.HasValue)
+                    {
+                        string oreName = currentOre.Value.Type.SubtypeId;
+                        targetIngotKey = oreName + "Ingot";
+                        var outputItems = new List<MyInventoryItem>();
+                        refn.OutputInventory.GetItems(outputItems);
+                        foreach (var it in outputItems)
+                        {
+                            if (it.Type.TypeId.EndsWith("_Ingot"))
+                            {
+                                // Check if the ingot's SubtypeId equals either "oreName" or "oreNameIngot"
+                                if (it.Type.SubtypeId.Equals(targetIngotKey, System.StringComparison.OrdinalIgnoreCase) ||
+                                    it.Type.SubtypeId.Equals(oreName, System.StringComparison.OrdinalIgnoreCase))
+                                {
+                                    targetIngotTotal += it.Amount;
+                                }
+                            }
+                        }
+                    }
+                    // Shift icons inward.
+                    float sideY = yStart + cellHeight / 2f;
+                    float leftX = xStart + 35f;
+                    float rightX = xStart + cellWidth - 35f;
+                    // Left side: Ore
+                    if (currentOre.HasValue)
+                    {
+                        var oreName = currentOre.Value.Type.SubtypeId;
+                        var oreAmount = currentOre.Value.Amount;
+                        if (itemSprites.ContainsKey(oreName))
+                        {
+                            var oreIcon = MySprite.CreateSprite(itemSprites[oreName], new Vector2(leftX + 10f, sideY - 20f), new Vector2(45, 45));
+                            oreIcon.Alignment = TextAlignment.CENTER;
+                            frame.Add(oreIcon);
+                        }
+                        string oreAmtStr = FormatAmount(oreAmount);
+                        var oreText = MySprite.CreateText(oreAmtStr, "Monospace", Color.White, 0.5f, TextAlignment.CENTER);
+                        oreText.Position = new Vector2(leftX + 10f, sideY + 10f);
+                        frame.Add(oreText);
+                    }
+                    else
+                    {
+                        var noOreText = MySprite.CreateText("No Ore", "Monospace", Color.Gray, 0.5f, TextAlignment.CENTER);
+                        noOreText.Position = new Vector2(leftX, sideY);
+                        frame.Add(noOreText);
+                    }
+                    // Right side: Ingot (for processed ore type)
+                    if (!string.IsNullOrEmpty(targetIngotKey))
+                    {
+                        if (itemSprites.ContainsKey(targetIngotKey))
+                        {
+                            var ingIcon = MySprite.CreateSprite(itemSprites[targetIngotKey], new Vector2(rightX - 10f, sideY - 20f), new Vector2(45, 45));
+                            ingIcon.Alignment = TextAlignment.CENTER;
+                            frame.Add(ingIcon);
+                        }
+                        string ingAmtStr = FormatAmount(targetIngotTotal);
+                        var ingText = MySprite.CreateText(ingAmtStr, "Monospace", Color.White, 0.5f, TextAlignment.CENTER);
+                        ingText.Position = new Vector2(rightX - 10f, sideY + 10f);
+                        frame.Add(ingText);
+                    }
+                    else
+                    {
+                        var noIngText = MySprite.CreateText("No Ingot", "Monospace", Color.Gray, 0.5f, TextAlignment.CENTER);
+                        noIngText.Position = new Vector2(rightX, sideY);
+                        frame.Add(noIngText);
+                    }
+                    // Draw the resource name at bottom center
+                    string resourceName = currentOre.HasValue ? currentOre.Value.Type.SubtypeId : "Idle";
+                    float bottomCenterY = yStart + cellHeight - 25f;
+                    var resourceText = MySprite.CreateText(resourceName, "Monospace", Color.Gold, 0.65f, TextAlignment.CENTER);
+                    resourceText.Position = new Vector2(xStart + cellWidth / 2f, bottomCenterY);
+                    frame.Add(resourceText);
+                }
+                else
+                {
+                    // Minimal mode: display only the refinery name and resource name.
+                    float topY = yStart + 5f;
+                    var nameText = MySprite.CreateText(WrapText(refn.CustomName, 20), "Monospace", Color.White, 0.45f, TextAlignment.CENTER);
+                    nameText.Position = new Vector2(xStart + cellWidth / 2f, topY);
+                    frame.Add(nameText);
+                    float bottomCenterY = yStart + cellHeight - 40f;
+                    var resourceText = MySprite.CreateText("Idle", "Monospace", Color.White, 0.65f, TextAlignment.CENTER);
+                    resourceText.Position = new Vector2(xStart + cellWidth / 2f, bottomCenterY);
+                    frame.Add(resourceText);
+                }
+            }
+            else
+            {
+                var emptySprite = MySprite.CreateText("No Refinery", "Monospace", Color.Gray, 0.5f, TextAlignment.CENTER);
+                emptySprite.Position = cellCenter;
+                frame.Add(emptySprite);
+            }
+        }
+    }
+    finally
+    {
+        frame.Dispose();
+    }
+}
+
+//-------------------------------------
+// DRAW RADIAL GAUGE GRADIENT
+//-------------------------------------
+void DrawRadialGaugeGradient(MySpriteDrawFrame frame, Vector2 center, float radius, float fillRatio, int segments)
+{
+    if (fillRatio < 0f) fillRatio = 0f;
+    if (fillRatio > 1f) fillRatio = 1f;
+    int fillSegments = (int)Math.Round(fillRatio * segments);
+    float angleStep = 360f / segments;
+    float startAngle = -90f;
+    for (int i = 0; i < segments; i++)
+    {
+        float angle = startAngle + i * angleStep;
+        float rad = (float)(Math.PI / 180.0 * angle);
+        var offset = new Vector2((float)Math.Cos(rad) * radius, (float)Math.Sin(rad) * radius);
+        var segSprite = MySprite.CreateSprite("Circle", center + offset, new Vector2(6f, 6f));
+        if (i < fillSegments)
+        {
+            float t = (fillSegments > 1) ? (float)i / (fillSegments - 1) : 1f;
+            segSprite.Color = FourStopGradient(t);
+        }
+        else
+        {
+            segSprite.Color = new Color(50, 50, 50);
+        }
+        frame.Add(segSprite);
+    }
+}
+
+//-------------------------------------
+// FOUR STOP GRADIENT
+//-------------------------------------
+Color FourStopGradient(float t)
+{
+    if (t < 0f) t = 0f;
+    if (t > 1f) t = 1f;
+    if (t < 0.33f)
+    {
+        float frac = t / 0.33f;
+        return LerpColor(new Color(0, 255, 0), new Color(255, 255, 0), frac);
+    }
+    else if (t < 0.66f)
+    {
+        float frac = (t - 0.33f) / 0.33f;
+        return LerpColor(new Color(255, 255, 0), new Color(255, 165, 0), frac);
+    }
+    else
+    {
+        float frac = (t - 0.66f) / 0.34f;
+        return LerpColor(new Color(255, 165, 0), new Color(255, 0, 0), frac);
+    }
+}
+
+//-------------------------------------
+// LERP COLOR
+//-------------------------------------
+Color LerpColor(Color c1, Color c2, float t)
+{
+    int r = (int)Math.Round(c1.R + (c2.R - c1.R) * t);
+    int g = (int)Math.Round(c1.G + (c2.G - c1.G) * t);
+    int b = (int)Math.Round(c1.B + (c2.B - c1.B) * t);
+    return new Color(r, g, b);
+}
+
+//-------------------------------------
+// UTILITY: WRAP TEXT
+//-------------------------------------
+string WrapText(string text, int maxChars)
+{
+    if (text.Length <= maxChars)
+        return text;
+    string[] words = text.Split(' ');
+    string result = "";
+    string line = "";
+    foreach (string word in words)
+    {
+        if (line.Length + word.Length + 1 > maxChars)
+        {
+            if (!string.IsNullOrEmpty(result))
+                result += "\n";
+            result += line.Trim();
+            line = "";
+        }
+        line += word + " ";
+    }
+    if (!string.IsNullOrEmpty(line))
+    {
+        if (!string.IsNullOrEmpty(result))
+            result += "\n";
+        result += line.Trim();
+    }
+    return result;
+}
+
+//-------------------------------------
+// UTILITY: FORMAT AMOUNT
+//-------------------------------------
+string FormatAmount(MyFixedPoint amt)
+{
+    double val = (double)amt;
+    if (val >= 1e9) return (val / 1e9).ToString("0.##") + "B";
+    if (val >= 1e6) return (val / 1e6).ToString("0.##") + "M";
+    if (val >= 1e3) return (val / 1e3).ToString("0.##") + "k";
+    return val.ToString("0");
+}
